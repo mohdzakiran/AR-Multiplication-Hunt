@@ -6,6 +6,7 @@
 <title>AR Multiplication Hunt</title>
 <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
 <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
 <style>
 *{box-sizing:border-box} body{margin:0;font-family:Arial,sans-serif;background:#111;color:#fff;overflow:hidden}
 #ui{position:fixed;z-index:20;top:0;left:0;width:100%;padding:12px;pointer-events:none}
@@ -28,6 +29,8 @@
 <button id="cameraBtn" onclick="startGame()">ENABLE CAMERA & START</button><p id="cameraStatus" style="font-size:13px;margin-top:12px"></p>
 </div></div>
 <div id="ui"><div class="panel"><div class="title">AR MULTIPLICATION HUNT</div><div class="stats"><span id="level">Level 1</span><span id="score">Score: 0</span><span id="qno">1/10</span></div><div id="question">Scan the marker</div><div class="hint">Move the camera until the AR marker is detected.</div></div></div>
+<div id="handStatus" style="position:fixed;z-index:28;right:10px;top:92px;background:rgba(10,20,35,.82);padding:8px 11px;border-radius:14px;font-size:12px;font-weight:700">Hand: starting…</div>
+<div id="fingerDot" style="position:fixed;z-index:29;width:22px;height:22px;border:3px solid #fff;border-radius:50%;background:rgba(255,202,58,.75);display:none;pointer-events:none;transform:translate(-50%,-50%)"></div>
 <div id="dropzone" class="dropzone">LETakkan jawapan di sini</div><div id="answers"><div class="answer-card" data-index="0"></div><div class="answer-card" data-index="1"></div><div class="answer-card" data-index="2"></div><div class="answer-card" data-index="3"></div></div>
 <div id="message"><h2 id="msgTitle"></h2><p id="msgText"></p><button onclick="nextQuestion()">NEXT</button></div>
 <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" renderer="colorManagement: true;" vr-mode-ui="enabled: false">
@@ -93,6 +96,66 @@ function startDrag(e){if(!started||e.currentTarget.style.pointerEvents==='none')
 function moveDrag(e){if(!dragCard)return; e.preventDefault(); const t=e.touches?e.touches[0]:e; dragCard.style.left=(t.clientX-offsetX)+'px'; dragCard.style.top=(t.clientY-offsetY)+'px'; dropzone.classList.toggle('active',pointInside(dropzone,t.clientX,t.clientY));}
 function endDrag(e){if(!dragCard)return; e.preventDefault(); const t=e.changedTouches?e.changedTouches[0]:e; const i=Number(dragCard.dataset.index); const dropped=pointInside(dropzone,t.clientX,t.clientY); dragCard.classList.remove('dragging'); dragCard.style.position=''; dragCard.style.left=''; dragCard.style.top=''; dragCard.style.width=''; dropzone.classList.remove('active'); if(dropped) answer(i); dragCard=null;}
 document.querySelectorAll('.answer-card').forEach(card=>{card.addEventListener('touchstart',startDrag,{passive:false});card.addEventListener('touchmove',moveDrag,{passive:false});card.addEventListener('touchend',endDrag,{passive:false});card.addEventListener('mousedown',startDrag);card.addEventListener('mousemove',e=>{if(dragCard)moveDrag(e)});card.addEventListener('mouseup',endDrag);});
+
+// Hand tracking: use the same webcam video created by AR.js. Pinch thumb + index to pick up a card.
+let handsReady=false, handLoopBusy=false, handDragCard=null, handPinching=false;
+const handStatus=document.getElementById('handStatus');
+const fingerDot=document.getElementById('fingerDot');
+function setHandStatus(t){ if(handStatus) handStatus.textContent='Hand: '+t; }
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function screenPoint(lm){return {x:lm.x*window.innerWidth,y:lm.y*window.innerHeight}}
+function cardAt(x,y){
+  const cards=[...document.querySelectorAll('.answer-card')];
+  for(const c of cards){ if(c.style.display==='none'||c.style.pointerEvents==='none') continue; if(pointInside(c,x,y)) return c; }
+  return null;
+}
+function moveHandCard(card,x,y){
+  if(!card) return;
+  const r=card.getBoundingClientRect();
+  card.style.position='fixed'; card.style.left=(x-r.width/2)+'px'; card.style.top=(y-r.height/2)+'px';
+  card.style.bottom='auto'; card.style.width=r.width+'px';
+}
+function releaseHandCard(x,y){
+  if(!handDragCard)return;
+  const card=handDragCard; const i=Number(card.dataset.index);
+  const dropped=pointInside(dropzone,x,y);
+  card.classList.remove('dragging'); card.style.position='';card.style.left='';card.style.top='';card.style.width='';card.style.bottom='';
+  dropzone.classList.remove('active'); handDragCard=null;
+  if(dropped) answer(i);
+}
+function onHandsResults(results){
+  if(!started)return;
+  const lm=results.multiHandLandmarks && results.multiHandLandmarks[0];
+  if(!lm){ setHandStatus('show your hand'); fingerDot.style.display='none'; if(handDragCard) releaseHandCard(-999,-999); handPinching=false; return; }
+  const tip=screenPoint(lm[8]); const pinch=dist(lm[8],lm[4])<0.065;
+  fingerDot.style.display='block'; fingerDot.style.left=tip.x+'px'; fingerDot.style.top=tip.y+'px';
+  if(pinch){
+    setHandStatus(handDragCard?'dragging…':'pinch to pick');
+    if(!handDragCard){ const c=cardAt(tip.x,tip.y); if(c){handDragCard=c; c.classList.add('dragging'); moveHandCard(c,tip.x,tip.y);} }
+    else {moveHandCard(handDragCard,tip.x,tip.y); dropzone.classList.toggle('active',pointInside(dropzone,tip.x,tip.y));}
+  } else {
+    setHandStatus('release to drop');
+    if(handDragCard) releaseHandCard(tip.x,tip.y);
+  }
+  handPinching=pinch;
+}
+async function initHandTracking(){
+  if(!window.Hands){setHandStatus('unavailable');return;}
+  const hands=new Hands({locateFile:(file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+  hands.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:.55,minTrackingConfidence:.55});
+  hands.onResults(onHandsResults); handsReady=true;
+  setHandStatus('waiting for camera');
+  async function loop(){
+    if(!started){setTimeout(loop,500);return;}
+    const video=document.querySelector('video');
+    if(video && video.readyState>=2 && video.videoWidth){
+      try{await hands.send({image:video}); setHandStatus(handDragCard?'dragging…':'show your hand');}catch(e){}
+    }
+    setTimeout(loop,80);
+  }
+  loop();
+}
+initHandTracking();
 
 function nextQuestion(){idx++;if(idx>=10){if(level<2){level++;idx=0;document.getElementById('msgTitle').textContent='Level Up!';document.getElementById('msgText').textContent='You are moving to Level '+(level+1)+'.';}else{document.getElementById('msgTitle').textContent='You Win!';document.getElementById('msgText').textContent='Final score: '+score+' / 300';document.querySelector('#message button').textContent='PLAY AGAIN';document.querySelector('#message button').onclick=()=>{level=0;idx=0;score=0;document.querySelector('#message button').textContent='NEXT';document.querySelector('#message button').onclick=nextQuestion;showQuestion()};document.getElementById('message').style.display='block';return}} showQuestion();}
 </script>
