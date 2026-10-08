@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AR Multiplication Hunt</title>
+<script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+<script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<style>
+*{box-sizing:border-box} body{margin:0;font-family:Arial,sans-serif;background:#111;color:#fff;overflow:hidden}
+#ui{position:fixed;z-index:20;top:0;left:0;width:100%;padding:12px;pointer-events:none}
+.panel{background:rgba(10,20,35,.88);border-radius:18px;padding:12px 15px;max-width:430px;margin:auto;box-shadow:0 5px 20px rgba(0,0,0,.35)}
+.title{font-size:22px;font-weight:800;text-align:center}.stats{display:flex;justify-content:space-between;margin-top:7px;font-weight:700;font-size:14px}
+#question{font-size:25px;font-weight:800;text-align:center;margin:9px 0 3px}.hint{text-align:center;font-size:12px;opacity:.8}
+#answers{position:fixed;z-index:25;bottom:14px;left:50%;transform:translateX(-50%);width:min(440px,94%);display:grid;grid-template-columns:1fr 1fr;gap:8px}.answer-card{border:3px solid #fff;border-radius:16px;padding:13px 8px;font-size:20px;font-weight:800;background:#fff;color:#14213d;box-shadow:0 4px 12px rgba(0,0,0,.3);text-align:center;touch-action:none;user-select:none;cursor:grab}.answer-card.dragging{opacity:.7;transform:scale(1.08);z-index:100}.dropzone{position:fixed;z-index:24;left:50%;bottom:150px;transform:translateX(-50%);width:min(300px,72%);height:75px;border:4px dashed #ffca3a;border-radius:22px;background:rgba(10,20,35,.82);display:flex;align-items:center;justify-content:center;text-align:center;font-size:18px;font-weight:800;color:#fff;pointer-events:none;transition:.15s}.dropzone.active{background:rgba(255,202,58,.35);transform:translateX(-50%) scale(1.04)}
+#message{position:fixed;z-index:30;left:50%;top:50%;transform:translate(-50%,-50%);width:min(360px,88%);background:rgba(255,255,255,.97);color:#17213b;border-radius:22px;padding:25px;text-align:center;display:none;box-shadow:0 12px 35px rgba(0,0,0,.45)}
+#message h2{margin:0 0 8px;font-size:30px}#message p{margin:5px 0 15px;font-size:18px}#message button{background:#17213b;color:white;width:100%}
+#start{position:fixed;z-index:50;inset:0;background:linear-gradient(135deg,#14213d,#2b5876);display:flex;align-items:center;justify-content:center;padding:25px}
+.startbox{width:min(430px,100%);background:white;color:#17213b;border-radius:28px;padding:28px;text-align:center}.startbox h1{font-size:34px;margin:0 0 8px}.startbox p{line-height:1.5}.startbox button{background:#ffb703;color:#17213b;width:100%;margin-top:10px}.badge{display:inline-block;background:#e9f5ff;border-radius:50px;padding:7px 12px;font-weight:700;margin:4px}
+</style>
+</head>
+<body>
+<div id="start"><div class="startbox">
+<h1>AR Multiplication Hunt</h1>
+<div class="badge">Mathematics DLP</div><div class="badge">Multiplication</div>
+<p>Point your camera at the <b>Hiro AR marker</b>. Count the 3D objects as equal groups, then choose the correct answer.</p>
+<p><b>Level 1:</b> ×2 and ×5<br><b>Level 2:</b> ×3 and ×4<br><b>Level 3:</b> mixed multiplication</p>
+<button id="cameraBtn" onclick="startGame()">ENABLE CAMERA & START</button><p id="cameraStatus" style="font-size:13px;margin-top:12px"></p>
+</div></div>
+<div id="ui"><div class="panel"><div class="title">AR MULTIPLICATION HUNT</div><div class="stats"><span id="level">Level 1</span><span id="score">Score: 0</span><span id="qno">1/10</span></div><div id="question">Scan the marker</div><div class="hint">Move the camera until the AR marker is detected.</div></div></div>
+<div id="handStatus" style="position:fixed;z-index:28;right:10px;top:92px;background:rgba(10,20,35,.82);padding:8px 11px;border-radius:14px;font-size:12px;font-weight:700">Hand: starting…</div>
+<div id="fingerDot" style="position:fixed;z-index:29;width:22px;height:22px;border:3px solid #fff;border-radius:50%;background:rgba(255,202,58,.75);display:none;pointer-events:none;transform:translate(-50%,-50%)"></div>
+<div id="dropzone" class="dropzone">LETakkan jawapan di sini</div><div id="answers"><div class="answer-card" data-index="0"></div><div class="answer-card" data-index="1"></div><div class="answer-card" data-index="2"></div><div class="answer-card" data-index="3"></div></div>
+<div id="message"><h2 id="msgTitle"></h2><p id="msgText"></p><button onclick="nextQuestion()">NEXT</button></div>
+<a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" renderer="colorManagement: true;" vr-mode-ui="enabled: false">
+<a-marker preset="hiro" id="marker">
+  <a-entity id="objects" position="0 0 0"></a-entity>
+  <a-text id="arText" value="MULTIPLY!" align="center" position="0 1.25 0" rotation="-90 0 0" color="#ffffff" width="3"></a-text>
+</a-marker>
+<a-entity camera></a-entity>
+</a-scene>
+<script>
+const levels=[
+ [{a:2,b:2},{a:3,b:2},{a:4,b:2},{a:5,b:2}],
+ [{a:2,b:3},{a:3,b:3},{a:4,b:3},{a:2,b:4}],
+ [{a:3,b:5},{a:4,b:4},{a:5,b:3},{a:6,b:4}]
+];
+let level=0,idx=0,score=0,current=null,started=false;
+const obj=document.getElementById('objects');
+const colors=['#ff595e','#ffca3a','#8ac926','#1982c4','#6a4c93'];
+async function startGame(){
+ const status=document.getElementById('cameraStatus');
+ const btn=document.getElementById('cameraBtn');
+ if(location.protocol==='file:'){
+   status.innerHTML='<b>Camera blocked:</b> Android browsers normally do not allow camera access when this file is opened directly from Downloads. Publish this file on an HTTPS website, then open that HTTPS link in Chrome.';
+   return;
+ }
+ if(!window.isSecureContext){
+   status.innerHTML='<b>Secure connection required:</b> Open the game using HTTPS.';
+   return;
+ }
+ if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+   status.textContent='This browser does not support camera access. Please use an updated Google Chrome.';
+   return;
+ }
+ try{
+   btn.disabled=true; status.textContent='Requesting camera permission…';
+   const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{exact:'user'},width:{ideal:1280},height:{ideal:720}},audio:false});
+   await attachFrontCamera(stream);
+   status.textContent='Front camera enabled.';
+   document.getElementById('start').style.display='none';started=true;showQuestion();
+ }catch(err){
+   btn.disabled=false;
+   const denied=err && (err.name==='NotAllowedError'||err.name==='PermissionDeniedError');
+   status.innerHTML=denied?'<b>Camera permission denied.</b> In Chrome, tap the site icon beside the address bar → Permissions → Camera → Allow, then reload the page.':'Camera could not start: '+(err.message||err.name||'Unknown error');
+ }
+}
+async function attachFrontCamera(stream){
+  let tries=0;
+  while(tries++<50){
+    const video=document.querySelector('video');
+    if(video){
+      try{
+        const old=video.srcObject;
+        if(old && old!==stream && old.getTracks) old.getTracks().forEach(t=>t.stop());
+        video.srcObject=stream;
+        video.setAttribute('playsinline','');
+        video.setAttribute('autoplay','');
+        video.muted=true;
+        await video.play();
+        return;
+      }catch(e){}
+    }
+    await new Promise(r=>setTimeout(r,100));
+  }
+  throw new Error('Front camera video element was not ready.');
+}
+function showQuestion(){
+ const q=levels[level][idx%levels[level].length]; current=q;
+ const correct=q.a*q.b; const choices=new Set([correct]);
+ while(choices.size<4){let delta=Math.floor(Math.random()*7)-3; if(delta===0)delta=2; let v=Math.max(1,correct+delta); choices.add(v)}
+ const arr=[...choices].sort(()=>Math.random()-.5); window.choices=arr;
+ document.getElementById('level').textContent='Level '+(level+1); document.getElementById('score').textContent='Score: '+score; document.getElementById('qno').textContent=(idx+1)+'/10';
+ document.getElementById('question').textContent=q.a+' × '+q.b+' = ?';
+ document.querySelectorAll('.answer-card').forEach((b,i)=>{b.textContent=String.fromCharCode(65+i)+'. '+arr[i]; b.style.display='block'; b.classList.remove('dragging'); b.dataset.index=i; b.style.pointerEvents='auto'}); document.getElementById('dropzone').textContent='SERET JAWAPAN KE SINI';
+ document.getElementById('message').style.display='none'; renderObjects(q.a,q.b);
+}
+function renderObjects(a,b){obj.innerHTML=''; const spacing=.28; const start=-(b-1)*spacing/2; for(let g=0;g<a;g++){for(let j=0;j<b;j++){let e=document.createElement('a-sphere');e.setAttribute('radius','.11');e.setAttribute('position',`${start+j*spacing} ${.18+g*.28} 0`);e.setAttribute('color',colors[g%colors.length]);obj.appendChild(e)}} document.getElementById('arText').setAttribute('value',a+' groups × '+b);
+}
+function answer(i){if(!started)return; const cards=document.querySelectorAll('.answer-card');cards.forEach(b=>b.style.pointerEvents='none'); const chosen=window.choices[i],correct=current.a*current.b; const m=document.getElementById('message'); if(chosen===correct){score+=10;document.getElementById('msgTitle').textContent='Correct!';document.getElementById('msgText').textContent='Great. '+current.a+' groups of '+current.b+' = '+correct+'. +10 points';}else{document.getElementById('msgTitle').textContent='Try Again!';document.getElementById('msgText').textContent='The correct answer is '+correct+'. Look at the equal groups in AR.';} document.getElementById('score').textContent='Score: '+score;m.style.display='block';}
+let dragCard=null, offsetX=0, offsetY=0;
+const dropzone=document.getElementById('dropzone');
+function pointInside(el,x,y){const r=el.getBoundingClientRect();return x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom}
+function startDrag(e){if(!started||e.currentTarget.style.pointerEvents==='none')return; e.preventDefault(); dragCard=e.currentTarget; const t=e.touches?e.touches[0]:e; const r=dragCard.getBoundingClientRect(); offsetX=t.clientX-r.left; offsetY=t.clientY-r.top; dragCard.classList.add('dragging'); dragCard.style.position='fixed'; dragCard.style.left=(t.clientX-offsetX)+'px'; dragCard.style.top=(t.clientY-offsetY)+'px'; dragCard.style.width=r.width+'px'; dragCard.style.bottom='auto';}
+function moveDrag(e){if(!dragCard)return; e.preventDefault(); const t=e.touches?e.touches[0]:e; dragCard.style.left=(t.clientX-offsetX)+'px'; dragCard.style.top=(t.clientY-offsetY)+'px'; dropzone.classList.toggle('active',pointInside(dropzone,t.clientX,t.clientY));}
+function endDrag(e){if(!dragCard)return; e.preventDefault(); const t=e.changedTouches?e.changedTouches[0]:e; const i=Number(dragCard.dataset.index); const dropped=pointInside(dropzone,t.clientX,t.clientY); dragCard.classList.remove('dragging'); dragCard.style.position=''; dragCard.style.left=''; dragCard.style.top=''; dragCard.style.width=''; dropzone.classList.remove('active'); if(dropped) answer(i); dragCard=null;}
+document.querySelectorAll('.answer-card').forEach(card=>{card.addEventListener('touchstart',startDrag,{passive:false});card.addEventListener('touchmove',moveDrag,{passive:false});card.addEventListener('touchend',endDrag,{passive:false});card.addEventListener('mousedown',startDrag);card.addEventListener('mousemove',e=>{if(dragCard)moveDrag(e)});card.addEventListener('mouseup',endDrag);});
+
+// Hand tracking: use the same webcam video created by AR.js. Pinch thumb + index to pick up a card.
+let handsReady=false, handLoopBusy=false, handDragCard=null, handPinching=false;
+const handStatus=document.getElementById('handStatus');
+const fingerDot=document.getElementById('fingerDot');
+function setHandStatus(t){ if(handStatus) handStatus.textContent='Hand: '+t; }
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function screenPoint(lm){return {x:lm.x*window.innerWidth,y:lm.y*window.innerHeight}}
+function cardAt(x,y){
+  const cards=[...document.querySelectorAll('.answer-card')];
+  for(const c of cards){ if(c.style.display==='none'||c.style.pointerEvents==='none') continue; if(pointInside(c,x,y)) return c; }
+  return null;
+}
+function moveHandCard(card,x,y){
+  if(!card) return;
+  const r=card.getBoundingClientRect();
+  card.style.position='fixed'; card.style.left=(x-r.width/2)+'px'; card.style.top=(y-r.height/2)+'px';
+  card.style.bottom='auto'; card.style.width=r.width+'px';
+}
+function releaseHandCard(x,y){
+  if(!handDragCard)return;
+  const card=handDragCard; const i=Number(card.dataset.index);
+  const dropped=pointInside(dropzone,x,y);
+  card.classList.remove('dragging'); card.style.position='';card.style.left='';card.style.top='';card.style.width='';card.style.bottom='';
+  dropzone.classList.remove('active'); handDragCard=null;
+  if(dropped) answer(i);
+}
+function onHandsResults(results){
+  if(!started)return;
+  const lm=results.multiHandLandmarks && results.multiHandLandmarks[0];
+  if(!lm){ setHandStatus('show your hand'); fingerDot.style.display='none'; if(handDragCard) releaseHandCard(-999,-999); handPinching=false; return; }
+  const tip=screenPoint(lm[8]); const pinch=dist(lm[8],lm[4])<0.065;
+  fingerDot.style.display='block'; fingerDot.style.left=tip.x+'px'; fingerDot.style.top=tip.y+'px';
+  if(pinch){
+    setHandStatus(handDragCard?'dragging…':'pinch to pick');
+    if(!handDragCard){ const c=cardAt(tip.x,tip.y); if(c){handDragCard=c; c.classList.add('dragging'); moveHandCard(c,tip.x,tip.y);} }
+    else {moveHandCard(handDragCard,tip.x,tip.y); dropzone.classList.toggle('active',pointInside(dropzone,tip.x,tip.y));}
+  } else {
+    setHandStatus('release to drop');
+    if(handDragCard) releaseHandCard(tip.x,tip.y);
+  }
+  handPinching=pinch;
+}
+async function initHandTracking(){
+  if(!window.Hands){setHandStatus('unavailable');return;}
+  const hands=new Hands({locateFile:(file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+  hands.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:.55,minTrackingConfidence:.55,selfieMode:true});
+  hands.onResults(onHandsResults); handsReady=true;
+  setHandStatus('waiting for camera');
+  async function loop(){
+    if(!started){setTimeout(loop,500);return;}
+    const video=document.querySelector('video');
+    if(video && video.readyState>=2 && video.videoWidth){
+      try{await hands.send({image:video}); setHandStatus(handDragCard?'dragging…':'show your hand');}catch(e){}
+    }
+    setTimeout(loop,80);
+  }
+  loop();
+}
+initHandTracking();
+
+function nextQuestion(){idx++;if(idx>=10){if(level<2){level++;idx=0;document.getElementById('msgTitle').textContent='Level Up!';document.getElementById('msgText').textContent='You are moving to Level '+(level+1)+'.';}else{document.getElementById('msgTitle').textContent='You Win!';document.getElementById('msgText').textContent='Final score: '+score+' / 300';document.querySelector('#message button').textContent='PLAY AGAIN';document.querySelector('#message button').onclick=()=>{level=0;idx=0;score=0;document.querySelector('#message button').textContent='NEXT';document.querySelector('#message button').onclick=nextQuestion;showQuestion()};document.getElementById('message').style.display='block';return}} showQuestion();}
+</script>
+</body></html>
