@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>WebAR Multiplication Hunt</title>
+<style>
+:root{--navy:#162653;--blue:#2563eb;--cyan:#61dafb;--gold:#ffc247}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#081124;color:white;font-family:Arial,Helvetica,sans-serif}
+#video{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);background:#101827}
+#shade{position:fixed;inset:0;background:linear-gradient(180deg,rgba(4,12,32,.72),rgba(4,12,32,.12) 44%,rgba(4,12,32,.62));pointer-events:none}
+#threeRoot{position:fixed;inset:0;z-index:2}
+#threeRoot canvas{display:block;width:100%;height:100%;touch-action:none}
+#top{position:fixed;z-index:5;top:10px;left:12px;right:12px;display:flex;align-items:center;justify-content:space-between;gap:8px;pointer-events:none}
+.pill{background:rgba(10,22,48,.84);border:1px solid #ffffff36;border-radius:999px;padding:9px 13px;font-size:13px;font-weight:800;backdrop-filter:blur(10px)}
+#controls{position:fixed;z-index:8;right:12px;top:58px;display:flex;gap:8px}
+button{border:0;border-radius:12px;padding:11px 14px;font-size:14px;font-weight:800;cursor:pointer;background:#eef4ff;color:#162653}
+#start{background:#0f9385;color:white}
+#status{position:fixed;z-index:7;bottom:12px;left:12px;right:12px;margin:auto;width:min(800px,calc(100% - 24px));background:rgba(10,22,48,.88);border:1px solid #ffffff2b;border-radius:14px;padding:10px 13px;text-align:center;font-size:13px;line-height:1.35;backdrop-filter:blur(10px)}
+#resultToast{position:fixed;z-index:20;left:50%;top:48%;transform:translate(-50%,-50%);display:none;padding:18px 30px;border-radius:20px;font-size:clamp(28px,5vw,54px);font-weight:900;letter-spacing:1px;text-align:center;text-shadow:0 2px 4px #0005;box-shadow:0 12px 32px #0006;border:3px solid #ffffffb0;min-width:220px;backdrop-filter:blur(8px)}
+#resultToast.correct{display:block;background:rgba(11,139,82,.96);color:#fff;border-color:#8affc0}
+#resultToast.incorrect{display:block;background:rgba(190,39,48,.96);color:#fff;border-color:#ffc0c0}
+#cursor{position:fixed;z-index:9;width:25px;height:25px;border:3px solid #72ffba;border-radius:50%;background:#00d98b35;display:none;pointer-events:none;transform:translate(-50%,-50%);box-shadow:0 0 0 5px #00d98b25}
+#cursor.pinching{border-color:#ffd04b;background:#ffd04b88;box-shadow:0 0 0 7px #ffd04b30}
+#fallback{position:fixed;z-index:8;bottom:68px;left:12px;right:12px;text-align:center;font-size:11px;color:#e4edff;text-shadow:0 1px 4px #000}
+@media(max-width:600px){.pill{font-size:11px;padding:8px 10px}#controls{top:54px;right:8px}button{padding:9px 10px;font-size:12px}#status{font-size:12px}}
+</style>
+</head>
+<body>
+<video id="video" autoplay muted playsinline></video><div id="shade"></div>
+<div id="threeRoot"></div>
+<div id="top">
+ <div class="pill">WEBAR MULTIPLICATION HUNT</div>
+ <div style="display:flex;gap:6px"><span class="pill" id="qPill">Question 1 / 20</span><span class="pill" id="scorePill">Score: 0</span></div>
+</div>
+<div id="controls"><button id="start">Enable front camera</button><button id="stop">Stop</button><button id="next">Next</button><button id="restart">Restart</button></div>
+<div id="cursor"></div>
+<div id="resultToast" role="status" aria-live="polite"></div>
+<div id="fallback">Three.js 3D answer cards + MediaPipe hand tracking · Mouse/touch also supported</div>
+<div id="status">Press “Enable front camera” and allow webcam access. Pinch thumb + index finger to grab a 3D answer card, move it to the target, then release.</div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script>
+(() => {
+const video=document.getElementById('video'), root=document.getElementById('threeRoot');
+const statusEl=document.getElementById('status'), cursor=document.getElementById('cursor');
+const qPill=document.getElementById('qPill'), scorePill=document.getElementById('scorePill');
+let renderer,scene,camera,raycaster,handModel,camStream,camTimer,ready=false;
+let cards=[],target=null,questionIndex=0,score=0,correct=0,questions=[],held=null,pinching=false,prevPinch=false;
+let pointerHeld=null;
+const ray=new THREE.Raycaster(), ndc=new THREE.Vector2();
+const rootGroup=new THREE.Group();
+const mat=(color,roughness=.4,metalness=.1)=>new THREE.MeshStandardMaterial({color,roughness,metalness});
+function roundedCard(w,h,depth,color){
+ const shape=new THREE.Shape(), r=.12;
+ shape.moveTo(-w/2+r,-h/2);shape.lineTo(w/2-r,-h/2);shape.quadraticCurveTo(w/2,-h/2,w/2,-h/2+r);
+ shape.lineTo(w/2,h/2-r);shape.quadraticCurveTo(w/2,h/2,w/2-r,h/2);
+ shape.lineTo(-w/2+r,h/2);shape.quadraticCurveTo(-w/2,h/2,-w/2,h/2-r);
+ shape.lineTo(-w/2,-h/2+r);shape.quadraticCurveTo(-w/2,-h/2,-w/2+r,-h/2);
+ const geo=new THREE.ExtrudeGeometry(shape,{depth,bevelEnabled:true,bevelSegments:2,steps:1,bevelSize:.025,bevelThickness:.025});
+ geo.center();return new THREE.Mesh(geo,mat(color,.3,.08));
+}
+function makeText(text,size,color='#ffffff'){
+ const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
+ canvas.width=2048;canvas.height=512;ctx.clearRect(0,0,2048,512);
+ ctx.font=`800 ${Math.round(size*140)}px Arial`;ctx.textAlign='center';ctx.textBaseline='middle';
+ ctx.shadowColor='#0005';ctx.shadowBlur=4;ctx.fillStyle=color;ctx.fillText(String(text),1024,256,1980);
+ const tex=new THREE.CanvasTexture(canvas);tex.colorSpace=THREE.SRGBColorSpace;
+ const mesh=new THREE.Mesh(new THREE.PlaneGeometry(4,1),new THREE.MeshBasicMaterial({map:tex,transparent:true,depthWrite:false}));
+ return mesh;
+}
+function addText(parent,text,x,y,z,w,color='#fff',size=.6){
+ const t=makeText(text,size,color);t.position.set(x,y,z);t.scale.set(w/4,w/4,1);parent.add(t);return t;
+}
+function init3D(){
+ scene=new THREE.Scene();scene.background=null;
+ camera=new THREE.PerspectiveCamera(45,innerWidth/innerHeight,.1,100);camera.position.set(0,0,11);
+ renderer=new THREE.WebGLRenderer({alpha:true,antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);renderer.setClearColor(0x000000,0);renderer.outputColorSpace=THREE.SRGBColorSpace;
+ root.appendChild(renderer.domElement);
+ scene.add(new THREE.HemisphereLight(0xffffff,0x536080,2.1));
+ const light=new THREE.DirectionalLight(0xffffff,2.5);light.position.set(-3,6,8);scene.add(light);
+ scene.add(rootGroup);raycaster=new THREE.Raycaster();
+ buildTarget();new ResizeObserver(resize).observe(document.body);resize();animate();
+}
+function worldWidthAtZ(z=0){const h=2*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))*Math.abs(camera.position.z-z);return h*camera.aspect}
+function buildTarget(){
+ if(target){rootGroup.remove(target);target.geometry?.dispose()}
+ const w=Math.min(5.8,worldWidthAtZ()*0.78),h=.9;
+ target=new THREE.Group();target.position.set(0,-2.15,0);
+ const base=roundedCard(w,h,.12,0xffbd38);target.add(base);
+ addText(target,'DROP ANSWER HERE',0,0,.12,w*.82,'#492400',.55);
+ target.userData.isTarget=true;rootGroup.add(target);
+}
+function clearCards(){for(const c of cards){rootGroup.remove(c.group)}cards=[]}
+function makeQuestions(){
+ const out=[];for(let i=0;i<20;i++){const a=1000+Math.floor(Math.random()*9000),b=2+Math.floor(Math.random()*8),ans=a*b;const s=new Set([ans]);while(s.size<4){let n=ans+(Math.floor(Math.random()*11)-5)*b;if(n>0)s.add(n)}const choices=[...s].sort(()=>Math.random()-.5);out.push({a,b,ans,choices})}return out;
+}
+function fmt(n){return n.toLocaleString('en-US')}
+function buildQuestion(){
+ clearCards();
+ const q=questions[questionIndex], ww=worldWidthAtZ();
+ const panelW=Math.min(7.8,ww*.86);
+ const header= new THREE.Group();header.position.set(0,2.45,0);
+ const board=roundedCard(panelW,1.6,.14,0x152653);header.add(board);
+ addText(header,`${fmt(q.a)} × ${q.b} = ?`,0,.26,.12,panelW*.76,'#ffffff',.82);
+ addText(header,`QUESTION ${questionIndex+1} OF 20   ·   SCORE ${score}`,0,-.38,.12,panelW*.75,'#cce3ff',.35);
+ rootGroup.add(header);cards.push({group:header,kind:'header'});
+ const cardW=Math.min(3.25,(ww*.82)/2-.14), cardH=.92;
+ const gap=.25, startX=-(cardW+gap)/2, ys=[.7,-.38];
+ q.choices.forEach((value,i)=>{
+  const g=new THREE.Group();g.position.set(startX+(i%2)*(cardW+gap),ys[Math.floor(i/2)],.1);
+  const body=roundedCard(cardW,cardH,.16,[0x2f7bf5,0x13a89e,0x8257e5,0xe88b27][i]);g.add(body);
+  addText(g,`${String.fromCharCode(65+i)}  ${fmt(value)}`,0,0,.13,cardW*.84,'#ffffff',.56);
+  g.userData={kind:'answer',value,correct:value===q.ans,baseY:g.position.y};
+  rootGroup.add(g);cards.push({group:g,kind:'answer',value});
+ });
+ qPill.textContent=`Question ${questionIndex+1} / 20`;scorePill.textContent=`Score: ${score}`;
+}
+function resize(){
+ if(!renderer||!camera)return;camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);buildTarget();buildQuestion();
+}
+function animate(){
+ requestAnimationFrame(animate);const t=performance.now()*.001;
+ cards.forEach((c,i)=>{if(c.kind==='answer'&&c.group!==held)c.group.position.y=c.group.userData.baseY+Math.sin(t*1.8+i)*.035});
+ if(renderer)renderer.render(scene,camera);
+}
+function screenToNDC(x,y){return new THREE.Vector2((x/innerWidth)*2-1,-(y/innerHeight)*2+1)}
+function findAnswerAt(x,y){
+ ndc.copy(screenToNDC(x,y));ray.setFromCamera(ndc,camera);
+ const objs=cards.filter(c=>c.kind==='answer').map(c=>c.group);
+ const hits=ray.intersectObjects(objs,true);if(!hits.length)return null;
+ let o=hits[0].object;while(o.parent&&o.userData.kind!=='answer')o=o.parent;return o.userData.kind==='answer'?o:null;
+}
+function pointOnTarget(x,y){
+ ndc.copy(screenToNDC(x,y));ray.setFromCamera(ndc,camera);const hits=ray.intersectObject(target,true);return hits.length>0;
+}
+function moveHeld(x,y){
+ if(!held)return;ndc.copy(screenToNDC(x,y));ray.setFromCamera(ndc,camera);
+ const plane=new THREE.Plane(new THREE.Vector3(0,0,1),-1);
+ const p=new THREE.Vector3();ray.ray.intersectPlane(plane,p);
+ held.position.set(p.x,p.y,1);held.scale.setScalar(1.08);
+}
+function releaseAt(x,y){
+ if(!held)return;const chosen=held;held=null;chosen.scale.setScalar(1);
+ if(pointOnTarget(x,y)){checkAnswer(chosen.userData.value);return}
+ statusEl.textContent='Answer released outside the target. Pinch an answer card again and release it over DROP ANSWER HERE.';
+ chosen.position.z=.1;buildQuestion();
+}
+function checkAnswer(value){
+ const q=questions[questionIndex];
+ const toast=document.getElementById('resultToast');
+ toast.className='';
+ if(value===q.ans){
+  score+=10;correct++;
+  toast.textContent='CORRECT!';
+  toast.classList.add('correct');
+  statusEl.textContent=`Correct! ${fmt(q.a)} × ${q.b} = ${fmt(q.ans)}. +10 points.`;
+ } else {
+  toast.textContent='INCORRECT';
+  toast.classList.add('incorrect');
+  statusEl.textContent=`Incorrect. Correct answer: ${fmt(q.ans)}.`;
+ }
+ scorePill.textContent=`Score: ${score}`;
+ setTimeout(()=>{
+  toast.className='';
+  toast.textContent='';
+  if(questionIndex<19){
+   questionIndex++;
+   buildQuestion();
+  } else {
+   clearCards();
+   const g=new THREE.Group();g.position.set(0,.5,0);
+   const b=roundedCard(Math.min(7,worldWidthAtZ()*.8),2,.15,0x152653);g.add(b);
+   addText(g,'GAME COMPLETE',0,.42,.12,4,'#fff',.8);
+   addText(g,`SCORE ${score} / 200`,0,-.1,.12,3.5,'#ffdc73',.65);
+   addText(g,`CORRECT ${correct} / 20`,0,-.55,.12,3,'#cce3ff',.45);
+   rootGroup.add(g);cards.push({group:g,kind:'header'});
+   qPill.textContent='Complete';
+   statusEl.textContent='Game completed. Press Restart in the browser or refresh to play again.';
+  }
+ },1100);
+}
+function handResults(results){
+ if(!results.multiHandLandmarks||!results.multiHandLandmarks.length){cursor.style.display='none';prevPinch=false;return}
+ const lm=results.multiHandLandmarks[0],idx=lm[8],thumb=lm[4],x=(1-idx.x)*innerWidth,y=idx.y*innerHeight;
+ cursor.style.display='block';cursor.style.left=x+'px';cursor.style.top=y+'px';
+ const pinch=Math.hypot(idx.x-thumb.x,idx.y-thumb.y)<.06;cursor.classList.toggle('pinching',pinch);
+ if(pinch&&!prevPinch&&!held){const obj=findAnswerAt(x,y);if(obj){held=obj;held.position.z=1;statusEl.textContent='Card picked up. Keep pinching and move to the drop target.'}}
+ if(pinch&&held)moveHeld(x,y);
+ if(!pinch&&prevPinch&&held)releaseAt(x,y);
+ prevPinch=pinch;
+}
+async function startCamera(){
+ try{
+  if(!navigator.mediaDevices?.getUserMedia)throw new Error('Camera needs HTTPS and a modern browser.');
+  camStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});
+  video.srcObject=camStream;await video.play();
+  if(!window.Hands)throw new Error('MediaPipe did not load. Check internet connection and refresh.');
+  handModel=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+  handModel.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:.6,minTrackingConfidence:.55});
+  handModel.onResults(handResults);
+  let busy=false;camTimer=setInterval(async()=>{if(!video.videoWidth||busy)return;busy=true;try{await handModel.send({image:video})}catch(e){}busy=false},70);
+  statusEl.textContent='Camera active. Point at a 3D answer card, pinch thumb + index to grab, then release over the target.';
+ }catch(e){statusEl.textContent='Camera error: '+e.message+' Allow webcam access and open this page via HTTPS.'}
+}
+function stopCamera(){if(camTimer)clearInterval(camTimer);camTimer=null;if(handModel){handModel.close();handModel=null}if(camStream){camStream.getTracks().forEach(t=>t.stop());camStream=null}video.srcObject=null;cursor.style.display='none';statusEl.textContent='Camera stopped. Use mouse/touch to move cards, or enable the camera.'}
+document.getElementById('start').addEventListener('click',startCamera);document.getElementById('stop').addEventListener('click',stopCamera);
+document.getElementById('restart').addEventListener('click',()=>{questionIndex=0;score=0;correct=0;questions=makeQuestions();buildQuestion();statusEl.textContent='New game ready.'});
+document.getElementById('next').addEventListener('click',()=>{if(questionIndex<19){questionIndex++;buildQuestion()}});
+questions=makeQuestions();renderer=null;init3D();buildQuestion();
+renderer.domElement.addEventListener('pointerdown',e=>{
+ const obj=findAnswerAt(e.clientX,e.clientY);
+ if(obj){held=obj;held.position.z=1;renderer.domElement.setPointerCapture?.(e.pointerId);statusEl.textContent='Answer card picked up. Drag it to the target and release.';e.preventDefault()}
+});
+renderer.domElement.addEventListener('pointermove',e=>{if(held&&!pinching){moveHeld(e.clientX,e.clientY);e.preventDefault()}});
+renderer.domElement.addEventListener('pointerup',e=>{if(held&&!pinching){releaseAt(e.clientX,e.clientY);e.preventDefault()}});
+
+})();
+</script>
+</body>
+</html>
